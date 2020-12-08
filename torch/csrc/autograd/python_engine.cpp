@@ -103,9 +103,10 @@ variable_list PythonEngine::execute(
 
 std::shared_ptr<at::ivalue::Future> PythonEngine::execute_with_graph_task(
     const std::shared_ptr<GraphTask>& graph_task,
-    std::shared_ptr<Node> graph_root) {
+    std::shared_ptr<Node> graph_root,
+    InputBuffer&& input_buffer) {
   try {
-    return Engine::execute_with_graph_task(graph_task, graph_root);
+    return Engine::execute_with_graph_task(graph_task, graph_root, std::move(input_buffer));
   } catch (python_error& e) {
     pybind11::gil_scoped_acquire gil;
     if (!PyErr_Occurred()) {
@@ -129,7 +130,7 @@ PyObject *THPEngine_run_backward(PyObject *self, PyObject *args, PyObject *kwarg
   unsigned char create_graph = 0;
   PyObject *inputs = nullptr;
   unsigned char allow_unreachable = 0;
-  unsigned char accumulate_grad = 0;
+  unsigned char accumulate_grad = 0; // Indicate whether to accumulate grad into leaf Tensors or capture
   const char *accepted_kwargs[] = { // NOLINT
       "tensors", "grad_tensors", "keep_graph", "create_graph", "inputs",
       "allow_unreachable", "accumulate_grad", nullptr

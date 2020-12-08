@@ -19,6 +19,7 @@ __all__ = [
     'atleast_2d',
     'atleast_3d',
     'align_tensors',
+    'broadcast_shapes',
     'broadcast_tensors',
     'cartesian_prod',
     'block_diag',
@@ -70,6 +71,39 @@ def broadcast_tensors(*tensors):
         if any(type(t) is not Tensor for t in tensors) and has_torch_function(tensors):
             return handle_torch_function(broadcast_tensors, tensors, *tensors)
     return _VF.broadcast_tensors(tensors)  # type: ignore
+
+
+def broadcast_shapes(*shapes):
+    r"""broadcast_shapes(*shapes) -> Size
+
+    Similar to :func:`broadcast_tensors` but for shapes.
+
+    This is equivalent to
+    ``torch.broadcast_tensors(*map(torch.empty, shapes))[0].shape``
+    but avoids the need create to intermediate tensors. This is useful for
+    broadcasting tensors of common batch shape but different rightmost shape,
+    e.g. to broadcast mean vectors with covariance matrices.
+
+    Example::
+
+        >>> torch.broadcast_shapes((2,), (3, 1), (1, 1, 1))
+        torch.Size([1, 3, 2])
+
+    Args:
+        \*shapes (torch.Size): Shapes of tensors.
+
+    Returns:
+        shape (torch.Size): A shape compatible with all input shapes.
+
+    Raises:
+        RuntimeError: If shapes are incompatible.
+    """
+    # TODO Movie this to C++ once the jit has better support for torch.Size.
+    with torch.no_grad():
+        scalar = torch.zeros((), device="cpu")
+        tensors = [scalar.expand(shape) for shape in shapes]
+        tensors = broadcast_tensors(*tensors)
+        return tensors[0].shape
 
 
 def split(tensor, split_size_or_sections, dim=0):
@@ -241,7 +275,7 @@ def lu_unpack(LU_data, LU_pivots, unpack_data=True, unpack_pivots=True):
             # product(*map(lambda x: list(range(x)), shape[:-2])) when issue 33781 is fixed
             indices = _indices_product(shape[:-2])
             for idx in indices:
-                final_order = [i for i in range(m)]  # noqa: C416 TODO: rewrite as list(range(m))
+                final_order = list(range(m))
                 for k, j in enumerate(_index_tensor_with_indices_list(LU_pivots_zero_idx, idx)):
                     final_order[k], final_order[j] = final_order[j], final_order[k]
                 # TODO: remove _index_tensor_with_indices_list when TorchScript supports indexing Tensor with list
@@ -249,7 +283,7 @@ def lu_unpack(LU_data, LU_pivots, unpack_data=True, unpack_pivots=True):
                 p_idx.copy_(p_idx.index_select(1, torch.as_tensor(final_order, device=LU_pivots.device)))
         else:
             P = torch.eye(m, device=LU_data.device, dtype=LU_data.dtype)
-            final_order = [i for i in range(m)]  # noqa: C416 TODO: rewrite as list(range(m))
+            final_order = list(range(m))
             for k, j, in enumerate(LU_pivots_zero_idx):
                 final_order[k], final_order[j] = final_order[j], final_order[k]
             P = P.index_select(1, torch.as_tensor(final_order, device=LU_pivots.device))
@@ -351,38 +385,37 @@ if TYPE_CHECKING:
         return _meshgrid(*tensors)
 else:
     def meshgrid(*tensors):
+        r"""Take :math:`N` tensors, each of which can be either scalar or 1-dimensional
+        vector, and create :math:`N` N-dimensional grids, where the :math:`i` :sup:`th` grid is defined by
+        expanding the :math:`i` :sup:`th` input over dimensions defined by other inputs.
+
+        Args:
+            tensors (list of Tensor): list of scalars or 1 dimensional tensors. Scalars will be
+                treated as tensors of size :math:`(1,)` automatically
+
+        Returns:
+            seq (sequence of Tensors): If the input has :math:`k` tensors of size
+            :math:`(N_1,), (N_2,), \ldots , (N_k,)`, then the output would also have :math:`k` tensors,
+            where all tensors are of size :math:`(N_1, N_2, \ldots , N_k)`.
+
+        Example::
+
+            >>> x = torch.tensor([1, 2, 3])
+            >>> y = torch.tensor([4, 5, 6])
+            >>> grid_x, grid_y = torch.meshgrid(x, y)
+            >>> grid_x
+            tensor([[1, 1, 1],
+                    [2, 2, 2],
+                    [3, 3, 3]])
+            >>> grid_y
+            tensor([[4, 5, 6],
+                    [4, 5, 6],
+                    [4, 5, 6]])
+        """
         return _meshgrid(*tensors)
 
 
 def _meshgrid(*tensors):
-    r"""Take :math:`N` tensors, each of which can be either scalar or 1-dimensional
-vector, and create :math:`N` N-dimensional grids, where the :math:`i` :sup:`th` grid is defined by
-expanding the :math:`i` :sup:`th` input over dimensions defined by other inputs.
-
-
-    Args:
-        tensors (list of Tensor): list of scalars or 1 dimensional tensors. Scalars will be
-        treated as tensors of size :math:`(1,)` automatically
-
-    Returns:
-        seq (sequence of Tensors): If the input has :math:`k` tensors of size
-        :math:`(N_1,), (N_2,), \ldots , (N_k,)`, then the output would also have :math:`k` tensors,
-        where all tensors are of size :math:`(N_1, N_2, \ldots , N_k)`.
-
-    Example::
-
-        >>> x = torch.tensor([1, 2, 3])
-        >>> y = torch.tensor([4, 5, 6])
-        >>> grid_x, grid_y = torch.meshgrid(x, y)
-        >>> grid_x
-        tensor([[1, 1, 1],
-                [2, 2, 2],
-                [3, 3, 3]])
-        >>> grid_y
-        tensor([[4, 5, 6],
-                [4, 5, 6],
-                [4, 5, 6]])
-    """
     if not torch.jit.is_scripting():
         if any(type(t) is not Tensor for t in tensors) and has_torch_function(tensors):
             return handle_torch_function(meshgrid, tensors, *tensors)
@@ -877,7 +910,7 @@ unique_consecutive = boolean_dispatch(
 unique_consecutive.__doc__ = _unique_consecutive_impl.__doc__
 
 
-def tensordot(a, b, dims=2):
+def tensordot(a, b, dims=2, out=None):
     r"""Returns a contraction of a and b over multiple dimensions.
 
     :attr:`tensordot` implements a generalized matrix product.
@@ -940,7 +973,10 @@ def tensordot(a, b, dims=2):
             raise RuntimeError(f"tensordot expects dims >= 0, but got dims={dims}")
         dims_a = list(range(-dims, 0))
         dims_b = list(range(dims))
-    return _VF.tensordot(a, b, dims_a, dims_b)  # type: ignore
+    if out is None:
+        return _VF.tensordot(a, b, dims_a, dims_b)  # type: ignore
+    else:
+        return _VF.tensordot(a, b, dims_a, dims_b, out=out)  # type: ignore
 
 def cartesian_prod(*tensors):
     """Do cartesian product of the given sequence of tensors. The behavior is similar to
@@ -1331,7 +1367,7 @@ def norm(input, p="fro", dim=None, keepdim=False, out=None, dtype=None):  # noqa
                 raise ValueError("dtype argument is not supported in frobenius norm")
 
             if _dim is None:
-                _dim = [i for i in range(ndim)]  # noqa: C416 TODO: rewrite as list(range(m))
+                _dim = list(range(ndim))
             if out is None:
                 return _VF.frobenius_norm(input, _dim, keepdim=keepdim)  # type: ignore
             else:
@@ -1352,7 +1388,7 @@ def norm(input, p="fro", dim=None, keepdim=False, out=None, dtype=None):  # noqa
         raise RuntimeError(f"only valid string values are 'fro' and 'nuc', found {p}")
     else:
         if _dim is None:
-            _dim = [i for i in range(ndim)]  # noqa: C416 TODO: rewrite as list(range(m))
+            _dim = list(range(ndim))
 
         if out is None:
             if dtype is None:

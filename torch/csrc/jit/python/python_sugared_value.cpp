@@ -92,12 +92,12 @@ FunctionSchema PythonValue::getSchema(
 
     auto types_it = arg_types.begin();
     for (; types_it != arg_types.end(); ++types_it, ++names_it) {
-      args.push_back(Argument(
+      args.emplace_back(
           /*name=*/*names_it,
           /*type=*/std::move(*types_it),
           /*N=*/c10::nullopt,
           /*default_value=*/c10::nullopt,
-          /*kwarg_only=*/false));
+          /*kwarg_only=*/false);
     }
     rets.push_back(Argument("0", std::move(ret_type), {}, {}, false));
   }
@@ -260,11 +260,13 @@ SugaredValuePtr ModuleValue::getitem(
       for (size_t i = 0; i < self_type->numAttributes(); ++i) {
         const auto& attr_type = self_type->getAttribute(i);
         if (attr_type->is_module()) {
-          if (!attr_type->isSubtypeOf(type_hint)) {
+          std::stringstream ss;
+          if (!attr_type->isSubtypeOfExt(type_hint, &ss)) {
             auto loc = self_->node()->sourceRange();
             throw ErrorReport(loc)
                 << "Attribute " << self_type->getAttributeName(i)
-                << " is not of annotated type " << type_hint->annotation_str();
+                << " is not of annotated type " << type_hint->annotation_str()
+                << ": " << ss.str();
           }
         }
       }
@@ -291,7 +293,7 @@ SugaredValuePtr ModuleValue::getitem(
 void checkInterface(
     const SourceRange& loc,
     Function& m,
-    std::shared_ptr<ModuleValue> self,
+    const std::shared_ptr<ModuleValue>& self,
     const std::string& field) {
   if (self->asValue(loc, m)->type()->cast<InterfaceType>()) {
     throw ErrorReport(loc)
@@ -305,7 +307,7 @@ void recurseThroughNestedModules(
     Function& m,
     std::vector<SugaredValuePtr>& keys,
     std::vector<SugaredValuePtr>& values,
-    std::shared_ptr<ModuleValue> self,
+    std::shared_ptr<ModuleValue>& self,
     const std::string& prefix,
     const std::string& field) {
   auto prefix_value =
